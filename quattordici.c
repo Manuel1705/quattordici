@@ -7,12 +7,6 @@
 
 #define N 14
 
-double get_cur_time() {
-    struct timeval tv;
-    struct timezone tz;
-    gettimeofday(&tv, &tz);
-    return (double) tv.tv_sec + tv.tv_usec / 1000000.0;
-}
 
 /*
  * Decode a linear index to a tuple of integers
@@ -58,6 +52,13 @@ void expected_absorption_time(u_int8_t n_players);
  *
 */
 void build_transition_matrix(double *Qn, u_int8_t n_players);
+
+double get_cur_time() {
+    struct timeval tv;
+    struct timezone tz;
+    gettimeofday(&tv, &tz);
+    return (double) tv.tv_sec + tv.tv_usec / 1000000.0;
+}
 
 int main() {
     const int n_players = 3;
@@ -112,7 +113,7 @@ void build_transition_matrix(double *Qn, const u_int8_t n_players) {
 
 
     printf("Building transition matrix of size %d x %d...\n", size, size);
-#pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(Qn, size, n_players)
+    #pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(Qn, size, n_players)
     for (int row = 0; row < size; row++) {
         u_int8_t *state = decode_state(row, n_players);
         if (is_absorbing_state(state, n_players)) {
@@ -127,34 +128,31 @@ void build_transition_matrix(double *Qn, const u_int8_t n_players) {
                     next_state[k] = state[k];
                 }
 
-                // updateds the next_state
+                // updates the next_state for the current player
                 // the for() allows to consider all the possibile results of the dice
                 // for all the player, one at the time
                 next_state[player] += dice;
-                // To avoid out of range
-                if (next_state[player] >= N)
-                    next_state[player] = N - 1;
-
-                //computes linear index of the new tuple
-                int col = 0;
-                int multiplier = 1;
-                for (int k = 0; k < n_players; k++) {
-                    col = col + next_state[k] * multiplier;
-                    multiplier *= N;
+                // if it's not an absorbing state
+                if (next_state[player] < N) {
+                    //computes linear index of the new tuple
+                    int col = 0;
+                    int multiplier = 1;
+                    for (int k = 0; k < n_players; k++) {
+                        col = col + next_state[k] * multiplier;
+                        multiplier *= N;
+                    }
+                    // updates probability in the transition matrix
+                    // 1/6 to go from col state to row state in one turn
+                    // every player has 1/n_players probability to throw the dice
+                    // so 1/6 * 1/n_players
+                    Qn[col + row * size] += 1.0 / (6.0 * n_players);
                 }
-
-                // updates probabilty
-                // 1/6 to go from col state to row state in one turn
-                // every player has 1/n_players probability to throw the dice
-                // so 1/6 * 1/n_players
-                Qn[col + row * size] = 1.0 / (6.0 * n_players) + ((n_players - 1) * Qn[col + row * size]);
             }
         }
         free(state);
     }
 }
 
-// Expected absorption time for n_players >= 2
 void expected_absorption_time(const u_int8_t n_players) {
     printf("\nCalculating for %d players...\n", n_players);
     const int size = (int) pow(14, n_players);
@@ -169,12 +167,12 @@ void expected_absorption_time(const u_int8_t n_players) {
         Qn[i] = 0;
 
     build_transition_matrix(Qn, n_players);
-    if (n_players == 1)
+    if (n_players < 3)
         print_transition_matrix(Qn, size);
 
     printf("Computing the fundamental matrix...\n");
     double *R = malloc(sizeof(double) * size * size);
-#pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(R, Qn, size)
+    #pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(R, Qn, size)
     for (int row = 0; row < size; row++)
         for (int col = 0; col < size; col++)
             R[col + row * size] = (row == col ? 1.0 : 0.0) - Qn[col + row * size];
@@ -183,7 +181,7 @@ void expected_absorption_time(const u_int8_t n_players) {
 
     printf("Computing the absorption time vector...\n");
     double *hit_time = malloc(sizeof(double) * size);
-#pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(hit_time, I, size)
+    #pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(hit_time, I, size)
     for (int row = 0; row < size; row++) {
         hit_time[row] = 0.0;
         for (int col = 0; col < size; col++)
@@ -208,7 +206,6 @@ void expected_absorption_time(const u_int8_t n_players) {
 double *invert_sqr_matrix(const double *A, const int n) {
     if (A == NULL) exit(EXIT_FAILURE);
     double *augmented = malloc(sizeof(double) * n * n * 2);
-#pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(augmented, A, n)
     for (int row = 0; row < n; row++) {
         for (int col = 0; col < n; col++) {
             // copies A to the left side of augmented
@@ -217,21 +214,21 @@ double *invert_sqr_matrix(const double *A, const int n) {
             augmented[row * 2 * n + (col + n)] = (row == col ? 1.0 : 0.0);
         }
     }
-#pragma omp barrier
-#pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(augmented, n)
     for (int row = 0; row < n; row++) {
         // the pivot is the element at (row, row)
         const double pivot = augmented[row * 2 * n + row];
+        // normalization of the pivot row (dividing by the pivot)
         for (int col = 0; col < 2 * n; col++)
             augmented[row * 2 * n + col] /= pivot;
 
+        #pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(augmented, n, row)
         for (int row2 = 0; row2 < n; row2++) {
-            if (row2 != row) {
-                const double ratio = augmented[row2 * 2 * n + row];
-                for (int col = 0; col < 2 * n; col++)
-                    augmented[row2 * 2 * n + col] -= ratio * augmented[row * 2 * n + col];
-            }
+            if (row2 == row) continue;
+            const double ratio = augmented[row2 * 2 * n + row];
+            for (int col = 0; col < 2 * n; col++)
+                augmented[row2 * 2 * n + col] -= ratio * augmented[row * 2 * n + col];
         }
+        // waits that every row is updated before moving to the next pivot row
     }
 
     double *inverse = malloc(sizeof(*inverse) * n * n);
