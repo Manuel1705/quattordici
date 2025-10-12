@@ -304,6 +304,7 @@ void montecarlo_simulation(const long attempts, const u_int8_t max_players) {
         // array to store the number of turns each attempt took to finish the game
         u_int8_t *turns_per_attempt = calloc(attempts, sizeof(*turns_per_attempt));
         if (turns_per_attempt == NULL) exit(EXIT_FAILURE);
+        // array to store the position of each player
         u_int8_t *positions = calloc(n_players, sizeof(*positions));
         if (positions == NULL) exit(EXIT_FAILURE);
         for (long int attempt = 0; attempt < attempts; attempt++) {
