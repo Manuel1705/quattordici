@@ -3,55 +3,79 @@
 #include <math.h>
 #include <stdbool.h>
 #include <sys/time.h>
+#include <stdint.h>
 #include <omp.h>
+#include <string.h>
 
 #define N 14
 
-
-/*
+/**
  * Decode a linear index to a tuple of integers
  * the tuple is incremented from left to right
- * -index: index to decode
- * -n_players: number of players, that is the length of the tuple
- * return: pointer to an array of integers representing the state tuple
+ * @param index index to decode
+ * @param n_players number of players, that is the length of the tuple
+ * @returns pointer to an array of integers representing the state tuple
 */
 u_int8_t *decode_state(int index, u_int8_t n_players);
 
-/*
+/**
  * Prints a state tuple
- * - state_tuple: pointer to an array of integers representing the state tuple
- * - n_players: number of players, that is the length of the tuple
+ * @param state_tuple pointer to an array of integers representing the state tuple
+ * @param n_players number of players, that is the length of the tuple
 */
 void print_state_tuple(const u_int8_t *state_tuple, u_int8_t n_players);
 
-/*
+/**
  *check if the state is absorbing for the game of quattordici
- * - state: tuple of integers representing the state of each player
- * - n_players: number of players
- * return: true if the state is absorbing, false otherwise
+ * @param state_tuple of integers representing the state of each player
+ * @param n_players number of players
+ * @returns true if the state is absorbing, false otherwise
  */
 bool is_absorbing_state(const u_int8_t *state_tuple, u_int8_t n_players);
 
 
-/*
+/**
  * Gauss-Jordan matrix inversion
- * - A: pointer to the matrix to invert
- * - n: number of rows and columns of the square matrix A
- * return: pointer to the inverted matrix
+ * @param A pointer to the matrix to invert
+ * @param n number of rows and columns of the square matrix A
+ * @returns pointer to the inverted matrix
 */
 double *invert_sqr_matrix(const double *A, int n);
 
 
-/*
+/**
  * Expected absorption time for n_players >= 2
- * - n_players: number of players (1, 2 or 3)
+ * @param n_players number of players (1, 2 or 3)
 */
 void expected_absorption_time(u_int8_t n_players);
 
-/*
- *
-*/
 void build_transition_matrix(double *Qn, u_int8_t n_players);
+
+/**
+ * Calculates the mean of an array of values.
+ * @param values array of values
+ * @param n  length of the array
+ * @return the mean of the array
+ */
+double mean(const u_int8_t *values, long n);
+
+/**
+ * Calculates the population standard deviation of an array of values.
+ * @param values array of values
+ * @param n number of elements in the array
+ * @param avg mean of the array
+ * @return - Standard deviation of the array
+ */
+double p_st_dev(const uint8_t *values, long n, double avg);
+
+/**
+ * Montecarlo simulation of the game of quattordici
+ * simulates the game for increasing number of players
+ * and calculates the average number of turns to finish the game
+ * @param attempts number of attempts to simulate
+ * @param max_players maximum number of players to simulate
+ */
+void montecarlo_simulation(long int attempts, u_int8_t max_players);
 
 double get_cur_time() {
     struct timeval tv;
@@ -61,10 +85,11 @@ double get_cur_time() {
 }
 
 int main() {
-    const int n_players = 3;
+    const int n_players = 1;
     const double start_time = get_cur_time();
     expected_absorption_time(n_players);
     printf("the program took %lf seconds\n", get_cur_time() - start_time);
+    montecarlo_simulation(10000000, 10);
     return 0;
 }
 
@@ -237,4 +262,79 @@ double *invert_sqr_matrix(const double *A, const int n) {
             inverse[col + row * n] = augmented[col + n + row * 2 * n];
     free(augmented);
     return inverse;
+}
+
+
+double mean(const u_int8_t *values, const long n) {
+    if (values == NULL || n <= 0) {
+        fprintf(stderr, "Error: Invalid input to mean function.\n");
+        return NAN;
+    }
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) {
+        sum += values[i];
+    }
+    return sum / (double) n;
+}
+
+double p_st_dev(const uint8_t *values, const long n, const double avg) {
+    if (values == NULL) {
+        fprintf(stderr, "Error: Invalid input to p_st_dev function.\n");
+        return NAN;
+    }
+    if (n <= 1) {
+        fprintf(stderr, "Error: At least two elements are required to compute standard deviation.\n");
+        return NAN;
+    }
+    double sq_sum = 0.0;
+    for (int i = 0; i < n; i++)
+        sq_sum += (values[i] - avg) * (values[i] - avg);
+    return sqrt(sq_sum / (double) n);
+}
+
+void montecarlo_simulation(const long attempts, const u_int8_t max_players) {
+    printf("Starting montecarlo simulation...\n");
+    double *avg = calloc(max_players, sizeof(*avg));
+    double *st_dev = calloc(max_players, sizeof(*st_dev));
+    #pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(attempts, max_players, avg, st_dev)
+    for (u_int8_t n_players = 1; n_players <= max_players; n_players++) {
+        unsigned int seed = (unsigned int) time(NULL) ^ omp_get_thread_num();
+        // array to store the number of turns each attempt took to finish the game
+        u_int8_t *turns_per_attempt = calloc(attempts, sizeof(*turns_per_attempt));
+        u_int8_t *positions = calloc(n_players, sizeof(*positions));
+        for (long int attempt = 0; attempt < attempts; attempt++) {
+            int8_t winner = -1;
+            memset(positions, 0, n_players * sizeof(*positions));
+            if (positions == NULL) exit(EXIT_FAILURE);
+            long int turns = 1;
+            while (1) {
+                for (u_int8_t i = 0; i < n_players; i++) {
+                    const u_int8_t dice = rand_r(&seed) % 6 + 1;
+                    positions[i] += dice;
+                    if (positions[i] >= N) {
+                        winner = (int8_t) i;
+                        break;
+                    }
+                }
+                if (winner != -1) break;
+                turns++;
+            }
+            turns_per_attempt[attempt] = turns;
+        }
+
+        const double m = mean(turns_per_attempt, attempts);
+        const double s = p_st_dev(turns_per_attempt, attempts, m);
+        avg[n_players - 1] = m;
+        st_dev[n_players - 1] = s;
+        free(turns_per_attempt);
+    }
+    printf("\n\nExpected # of turns for increasing number of players:\n");
+    for (int i = 0; i < max_players; i++)
+        printf("(%d, %.6f)\n", i + 1, avg[i]);
+
+    printf("\nSt_dev:\n");
+    for (int i = 0; i < max_players; i++)
+        printf("(%d, %.6f)\n", i + 1, st_dev[i]);
+    free(avg);
+    free(st_dev);
 }
