@@ -295,17 +295,20 @@ double p_st_dev(const uint8_t *values, const long n, const double avg) {
 void montecarlo_simulation(const long attempts, const u_int8_t max_players) {
     printf("Starting montecarlo simulation...\n");
     double *avg = calloc(max_players, sizeof(*avg));
+    if (avg == NULL) exit(EXIT_FAILURE);
     double *st_dev = calloc(max_players, sizeof(*st_dev));
+    if (st_dev == NULL) exit(EXIT_FAILURE);
     #pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(attempts, max_players, avg, st_dev)
     for (u_int8_t n_players = 1; n_players <= max_players; n_players++) {
         unsigned int seed = (unsigned int) time(NULL) ^ omp_get_thread_num();
         // array to store the number of turns each attempt took to finish the game
         u_int8_t *turns_per_attempt = calloc(attempts, sizeof(*turns_per_attempt));
+        if (turns_per_attempt == NULL) exit(EXIT_FAILURE);
         u_int8_t *positions = calloc(n_players, sizeof(*positions));
+        if (positions == NULL) exit(EXIT_FAILURE);
         for (long int attempt = 0; attempt < attempts; attempt++) {
             int8_t winner = -1;
             memset(positions, 0, n_players * sizeof(*positions));
-            if (positions == NULL) exit(EXIT_FAILURE);
             long int turns = 1;
             while (1) {
                 for (u_int8_t i = 0; i < n_players; i++) {
