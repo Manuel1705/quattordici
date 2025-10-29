@@ -85,9 +85,10 @@ double get_cur_time() {
 }
 
 int main() {
-    const int n_players = 2;
     const double start_time = get_cur_time();
-    expected_absorption_time(n_players);
+    expected_absorption_time(1);
+    expected_absorption_time(2);
+    expected_absorption_time(3);
     printf("the program took %lf seconds\n", get_cur_time() - start_time);
     montecarlo_simulation(10000000, 10);
     return 0;
@@ -210,12 +211,14 @@ void expected_absorption_time(const u_int8_t n_players) {
     }
 
     printf("Expected absorption time from each state:\n");
+    u_int8_t *state_tuple = NULL;
     for (int i = 0; i < total_states; i++) {
-        u_int8_t *state_tuple = decode_state(i, n_players);
+        state_tuple = decode_state(i, n_players);
         print_state_tuple(state_tuple, n_players);
         printf(": %.6f\n", hit_time[i]);
-        free(state_tuple);
+        if (n_players > 1) break;
     }
+    free(state_tuple);
 
     free(hit_time);
     free(I);
