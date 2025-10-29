@@ -85,7 +85,7 @@ double get_cur_time() {
 }
 
 int main() {
-    const int n_players = 1;
+    const int n_players = 2;
     const double start_time = get_cur_time();
     expected_absorption_time(n_players);
     printf("the program took %lf seconds\n", get_cur_time() - start_time);
@@ -116,7 +116,7 @@ void print_state_tuple(const u_int8_t *state_tuple, const u_int8_t n_players) {
 bool is_absorbing_state(const u_int8_t *state_tuple, const u_int8_t n_players) {
     if (state_tuple == NULL) exit(EXIT_FAILURE);
     for (int i = 0; i < n_players; i++) {
-        if (state_tuple[i] >= N - 1)
+        if (state_tuple[i] >= N)
             return true;
     }
     return false;
@@ -134,43 +134,45 @@ void print_transition_matrix(const double *Q, const int size) {
 
 void build_transition_matrix(double *Qn, const u_int8_t n_players) {
     if (Qn == NULL) exit(EXIT_FAILURE);
-    const int size = (int) pow(N, n_players);
+    const int total_states = (int) pow(N, n_players);
 
-
-    printf("Building transition matrix of size %d x %d...\n", size, size);
-    #pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(Qn, size, n_players)
-    for (int row = 0; row < size; row++) {
+    printf("Building transition matrix (only transient states) for %d players...\n", n_players);
+    #pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(Qn, total_states, n_players)
+    for (int row = 0; row < total_states; row++) {
         u_int8_t *state = decode_state(row, n_players);
         if (is_absorbing_state(state, n_players)) {
             free(state);
-            continue;
+            continue; // skip absorbing states
         }
+
         u_int8_t next_state[n_players];
+
+        // for every player
         for (int player = 0; player < n_players; player++) {
+            // for every possible dice result
             for (int dice = 1; dice <= 6; dice++) {
                 // copy of the current state
-                for (int k = 0; k < n_players; k++) {
-                    next_state[k] = state[k];
-                }
-
-                // updates the next_state for the current player
-                // the for() allows to consider all the possibile results of the dice
-                // for all the player, one at the time
+                memcpy(next_state, state, n_players * sizeof(u_int8_t));
+                // updates the next_state
                 next_state[player] += dice;
+
                 // if it's not an absorbing state
                 if (next_state[player] < N) {
                     //computes linear index of the new tuple
-                    int col = 0;
+                    int index = 0;
                     int multiplier = 1;
                     for (int k = 0; k < n_players; k++) {
-                        col = col + next_state[k] * multiplier;
+                        index += next_state[k] * multiplier;
                         multiplier *= N;
                     }
                     // updates probability in the transition matrix
                     // 1/6 to go from col state to row state in one turn
                     // every player has 1/n_players probability to throw the dice
                     // so 1/6 * 1/n_players
-                    Qn[col + row * size] += 1.0 / (6.0 * n_players);
+                    #pragma omp atomic
+                    Qn[index + row * total_states] += 1.0 / (6.0 * n_players);
+                } else {
+                    break; // no need to check higher dice values for this player
                 }
             }
         }
@@ -179,42 +181,36 @@ void build_transition_matrix(double *Qn, const u_int8_t n_players) {
 }
 
 void expected_absorption_time(const u_int8_t n_players) {
-    printf("\nCalculating for %d players...\n", n_players);
-    const int size = (int) pow(14, n_players);
+    printf("\nCalculating expected absorption time (Markov) for %d players...\n", n_players);
+    const int total_states = (int) pow(N, n_players);
 
-    if (n_players > 4) {
-        printf("Number of players must less the 5.\n");
-        return;
-    }
-
-    double *Qn = malloc(sizeof(double) * size * size);
-    for (int i = 0; i < size * size; i++)
-        Qn[i] = 0;
+    double *Qn = calloc(total_states * total_states, sizeof(double));
+    if (Qn == NULL) exit(EXIT_FAILURE);
 
     build_transition_matrix(Qn, n_players);
-    if (n_players < 3)
-        print_transition_matrix(Qn, size);
+    if (n_players == 1)
+        print_transition_matrix(Qn, total_states);
 
     printf("Computing the fundamental matrix...\n");
-    double *R = malloc(sizeof(double) * size * size);
-    #pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(R, Qn, size)
-    for (int row = 0; row < size; row++)
-        for (int col = 0; col < size; col++)
-            R[col + row * size] = (row == col ? 1.0 : 0.0) - Qn[col + row * size];
+    double *R = malloc(sizeof(double) * total_states * total_states);
+    #pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(R, Qn, total_states)
+    for (int row = 0; row < total_states; row++)
+        for (int col = 0; col < total_states; col++)
+            R[col + row * total_states] = (row == col ? 1.0 : 0.0) - Qn[col + row * total_states];
 
-    double *I = invert_sqr_matrix(R, size);
+    double *I = invert_sqr_matrix(R, total_states);
 
     printf("Computing the absorption time vector...\n");
-    double *hit_time = malloc(sizeof(double) * size);
-    #pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(hit_time, I, size)
-    for (int row = 0; row < size; row++) {
+    double *hit_time = malloc(sizeof(double) * total_states);
+    #pragma omp parallel for num_threads(8) schedule(dynamic) default(none) shared(hit_time, I, total_states)
+    for (int row = 0; row < total_states; row++) {
         hit_time[row] = 0.0;
-        for (int col = 0; col < size; col++)
-            hit_time[row] += I[col + row * size];
+        for (int col = 0; col < total_states; col++)
+            hit_time[row] += I[col + row * total_states];
     }
 
     printf("Expected absorption time from each state:\n");
-    for (int i = 0; i < size; i++) {
+    for (int i = 0; i < total_states; i++) {
         u_int8_t *state_tuple = decode_state(i, n_players);
         print_state_tuple(state_tuple, n_players);
         printf(": %.6f\n", hit_time[i]);
@@ -331,6 +327,7 @@ void montecarlo_simulation(const long attempts, const u_int8_t max_players) {
         avg[n_players - 1] = m;
         st_dev[n_players - 1] = s;
         free(turns_per_attempt);
+        free(positions);
     }
     printf("\n\nExpected # of turns for increasing number of players:\n");
     for (int i = 0; i < max_players; i++)
